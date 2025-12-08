@@ -38,10 +38,11 @@ This project implements a complete workflow for acoustic panel design optimizati
 
 ```bash
 # Install Python dependencies
-pip install numpy pandas shapely scikit-learn pymoo matplotlib
+pip3 install -r requirements.txt
 
-# Install PyMesh (see PyMesh documentation for installation)
-# PyMesh requires additional dependencies and may need to be built from source
+# Note: PyMesh is optional - the code works without it using simplified mesh generation
+# For full PyMesh functionality, see PyMesh documentation for installation
+# PyMesh may require building from source or using conda
 
 # Install FEniCS (see FEniCS documentation for installation)
 # FEniCS installation varies by platform
@@ -95,8 +96,8 @@ Generate diverse 3D panel geometries with varying properties.
    - Sustainability index ≥ baseline threshold
 
 **Example:**
-```python
-python src/dataset_generation.py --num_samples 1000 --output_dir data/geometries
+```bash
+python3 src/dataset_generation.py --num_samples 1000 --output_dir data/geometries
 ```
 
 ### Step 2: Finite Element Simulation
@@ -115,8 +116,8 @@ Simulate acoustic performance using FEniCS.
 6. Save results to CSV file
 
 **Example:**
-```python
-python src/fem_simulation.py --input_dir data/geometries --output_file data/simulation_results.csv
+```bash
+python3 src/fem_simulation.py --input_dir data/geometries --output_file data/simulation_results.csv
 ```
 
 ### Step 3: Surrogate Model Development
@@ -133,8 +134,8 @@ Train machine learning models to predict acoustic performance without expensive 
 7. Save trained model
 
 **Example:**
-```python
-python src/surrogate_model.py --data_file data/simulation_results.csv --model_file models/surrogate_model.pkl
+```bash
+python3 src/surrogate_model.py --data_file data/simulation_results.csv --model_file models/surrogate_model.pkl
 ```
 
 ### Step 4: Optimization
@@ -156,8 +157,8 @@ Use multi-objective optimization to find optimal panel designs.
 6. Save selected geometries
 
 **Example:**
-```python
-python src/optimization.py --model_file models/surrogate_model.pkl --output_file data/optimized_designs.csv
+```bash
+python3 src/optimization.py --model_file models/surrogate_model.pkl --output_file data/optimized_designs.csv
 ```
 
 ### Step 5: Results and Analysis
@@ -170,8 +171,8 @@ Visualize and analyze optimization results.
 3. Highlight best designs (e.g., TL ≥ 35 dB and NRC ≥ 0.85)
 
 **Example:**
-```python
-python src/visualization.py --results_file data/optimized_designs.csv --output_dir results/plots
+```bash
+python3 src/visualization.py --results_file data/optimized_designs.csv --output_dir results/plots
 ```
 
 ## Material Properties

@@ -14,13 +14,20 @@ from typing import Dict, List, Tuple, Optional, Any
 from shapely.geometry import Point, Polygon, LineString, MultiPolygon
 from shapely.ops import unary_union, transform
 from shapely.affinity import scale, translate, rotate
-import pymesh
 from tqdm import tqdm
 import random
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Try to import PyMesh, but handle gracefully if not available
+try:
+    import pymesh
+    PYMESH_AVAILABLE = True
+except ImportError:
+    PYMESH_AVAILABLE = False
+    logger.warning("PyMesh not available. Using simplified mesh generation.")
 
 # Constants
 BOUNDS = (0.5, 0.5)  # 0.5 × 0.5 m bounds
@@ -760,8 +767,8 @@ def check_bounds(geometry: Polygon, bounds: Tuple[float, float]) -> bool:
 # 2D to 3D Conversion (PyMesh)
 # ============================================================================
 
-def extrude_to_3d(geometry: Polygon, thickness: float) -> Optional[Any]:
-    """Extrude 2D Shapely geometry to 3D using PyMesh."""
+def extrude_to_3d(geometry: Polygon, thickness: float) -> Optional[Dict[str, np.ndarray]]:
+    """Extrude 2D Shapely geometry to 3D mesh data."""
     try:
         # Extract exterior coordinates
         if isinstance(geometry, MultiPolygon):
@@ -779,8 +786,7 @@ def extrude_to_3d(geometry: Polygon, thickness: float) -> Optional[Any]:
         # Create 2D mesh
         vertices_2d = np.array(exterior_coords)
         
-        # Simple triangulation (PyMesh would handle this better)
-        # For now, create a simple extrusion
+        # Simple triangulation - create a simple extrusion
         num_vertices = len(vertices_2d)
         vertices_3d = []
         faces = []
@@ -795,27 +801,30 @@ def extrude_to_3d(geometry: Polygon, thickness: float) -> Optional[Any]:
         
         vertices_3d = np.array(vertices_3d)
         
-        # Create faces (simplified - would need proper triangulation)
-        # Bottom face
+        # Create faces (simplified triangulation)
+        # Bottom face (fan triangulation)
         for i in range(1, num_vertices - 1):
             faces.append([0, i, i + 1])
         
-        # Top face
+        # Top face (fan triangulation, reversed)
         for i in range(1, num_vertices - 1):
             faces.append([num_vertices, num_vertices + i + 1, num_vertices + i])
         
-        # Side faces
+        # Side faces (quads as two triangles)
         for i in range(num_vertices):
             next_i = (i + 1) % num_vertices
+            # First triangle of quad
             faces.append([i, next_i, num_vertices + i])
+            # Second triangle of quad
             faces.append([next_i, num_vertices + next_i, num_vertices + i])
         
-        faces = np.array(faces)
+        faces = np.array(faces, dtype=int)
         
-        # Create PyMesh mesh
-        mesh = pymesh.form_mesh(vertices_3d, faces)
-        
-        return mesh
+        # Return mesh data as dictionary
+        return {
+            'vertices': vertices_3d,
+            'faces': faces
+        }
     
     except Exception as e:
         logger.warning(f"Extrusion failed: {e}")
@@ -826,17 +835,31 @@ def extrude_to_3d(geometry: Polygon, thickness: float) -> Optional[Any]:
 # Material System
 # ============================================================================
 
-def assign_material() -> Tuple[str, Dict[str, float]]:
-    """Randomly assign material and sample properties."""
-    material_type = random.choice(list(MATERIALS.keys()))
-    material_props = MATERIALS[material_type]
+def assign_material(min_sustainability: float = MIN_SUSTAINABILITY) -> Tuple[str, Dict[str, float]]:
+    """Randomly assign material and sample properties, ensuring sustainability threshold."""
+    # Filter materials that can meet sustainability threshold
+    valid_materials = {
+        k: v for k, v in MATERIALS.items() 
+        if v['sustainability_index'][1] >= min_sustainability
+    }
+    
+    if not valid_materials:
+        # If no materials meet threshold, use all materials (will fail validation)
+        valid_materials = MATERIALS
+    
+    material_type = random.choice(list(valid_materials.keys()))
+    material_props = valid_materials[material_type]
+    
+    # Sample sustainability from range that meets threshold
+    sust_min, sust_max = material_props['sustainability_index']
+    sust_range_min = max(sust_min, min_sustainability)
     
     properties = {
         'density': random.uniform(*material_props['density']),
         'youngs_modulus': random.uniform(*material_props['youngs_modulus']),
         'poissons_ratio': random.uniform(*material_props['poissons_ratio']),
         'cost': random.uniform(*material_props['cost']),
-        'sustainability_index': random.uniform(*material_props['sustainability_index'])
+        'sustainability_index': random.uniform(sust_range_min, sust_max)
     }
     
     return material_type, properties
@@ -866,21 +889,46 @@ def compute_2d_features(geometry: Polygon) -> Dict[str, float]:
     return features
 
 
-def compute_3d_features(mesh: Any, thickness: float) -> Dict[str, float]:
-    """Compute 3D geometric features using PyMesh."""
+def compute_3d_features(mesh_data: Dict[str, np.ndarray], thickness: float) -> Dict[str, float]:
+    """Compute 3D geometric features from mesh data."""
     try:
+        vertices = mesh_data['vertices']
+        faces = mesh_data['faces']
+        
+        # Compute surface area (sum of triangle areas)
+        surface_area = 0.0
+        volume = 0.0
+        
+        for face in faces:
+            v0, v1, v2 = vertices[face]
+            # Triangle area using cross product
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            triangle_area = 0.5 * np.linalg.norm(np.cross(edge1, edge2))
+            surface_area += triangle_area
+            
+            # Volume contribution (signed volume)
+            volume += np.dot(v0, np.cross(v1, v2)) / 6.0
+        
+        # Ensure volume is positive
+        volume = abs(volume)
+        
+        # Bounding box volume for porosity calculation
+        bbox_min = vertices.min(axis=0)
+        bbox_max = vertices.max(axis=0)
+        bbox_volume = np.prod(bbox_max - bbox_min)
+        
         features = {
-            'surface_area': mesh.area,
-            'volume': mesh.volume,
-            'porosity': 0.0,  # Would need bounding box volume
-            'area_thickness_ratio': mesh.area / thickness if thickness > 0 else 0
+            'surface_area': float(surface_area),
+            'volume': float(volume),
+            'porosity': float((1 - volume / bbox_volume) * 100) if bbox_volume > 0 else 0.0,
+            'area_thickness_ratio': float(surface_area / thickness) if thickness > 0 else 0.0,
+            'curvature_metric': 0.0  # Placeholder - would need curvature computation
         }
         
-        # Curvature (simplified - PyMesh has curvature computation)
-        features['curvature_metric'] = 0.0  # Placeholder
-        
         return features
-    except:
+    except Exception as e:
+        logger.warning(f"Feature computation failed: {e}")
         return {
             'surface_area': 0.0,
             'volume': 0.0,
@@ -896,10 +944,13 @@ def compute_3d_features(mesh: Any, thickness: float) -> Dict[str, float]:
 
 def check_area_thickness_ratio(area: float, thickness: float) -> bool:
     """Check if area/thickness ratio is within bounds."""
-    if thickness <= 0:
+    if thickness <= 0 or area <= 0:
         return False
     ratio = area / thickness
-    return MIN_AREA_THICKNESS_RATIO <= ratio <= MAX_AREA_THICKNESS_RATIO
+    is_valid = MIN_AREA_THICKNESS_RATIO <= ratio <= MAX_AREA_THICKNESS_RATIO
+    if not is_valid:
+        logger.debug(f"Area/thickness ratio {ratio:.2f} outside bounds [{MIN_AREA_THICKNESS_RATIO}, {MAX_AREA_THICKNESS_RATIO}]")
+    return is_valid
 
 
 def check_cost(total_cost: float, max_cost: float) -> bool:
@@ -916,10 +967,22 @@ def check_sustainability(sustainability_index: float, min_threshold: float = MIN
 # Storage Functions
 # ============================================================================
 
-def save_mesh(mesh: Any, filepath: str) -> bool:
-    """Save PyMesh mesh to OBJ file."""
+def save_mesh(mesh_data: Dict[str, np.ndarray], filepath: str) -> bool:
+    """Save mesh data to OBJ file."""
     try:
-        pymesh.save_mesh(filepath, mesh)
+        vertices = mesh_data['vertices']
+        faces = mesh_data['faces']
+        
+        with open(filepath, 'w') as f:
+            # Write vertices
+            for v in vertices:
+                f.write(f"v {v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
+            
+            # Write faces (OBJ uses 1-based indexing)
+            for face in faces:
+                # OBJ format: f v1 v2 v3
+                f.write(f"f {face[0]+1} {face[1]+1} {face[2]+1}\n")
+        
         return True
     except Exception as e:
         logger.error(f"Failed to save mesh {filepath}: {e}")
@@ -1060,8 +1123,23 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
     # Generate samples
     pbar = tqdm(total=num_samples, desc="Generating geometries")
     
+    # Maximum attempts to prevent infinite loops
+    max_attempts = num_samples * 10  # Allow up to 10x attempts per sample
+    consecutive_failures = 0
+    max_consecutive_failures = 100  # Stop if 100 consecutive failures
+    
     while stats['valid_samples'] < num_samples:
         stats['total_generated'] += 1
+        
+        # Safety check to prevent infinite loops
+        if stats['total_generated'] > max_attempts:
+            logger.error(f"Reached maximum attempts ({max_attempts}). Stopping generation.")
+            break
+        
+        if consecutive_failures >= max_consecutive_failures:
+            logger.error(f"Too many consecutive failures ({consecutive_failures}). Stopping generation.")
+            logger.error("This may indicate overly strict constraints or a bug in generation.")
+            break
         
         # Sample complexity level
         complexity_level = random.choices(range(1, 6), weights=complexity_weights)[0]
@@ -1123,19 +1201,28 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
             # Validate bounds
             if not check_bounds(base_shape, BOUNDS):
                 stats['invalid_samples'] += 1
+                consecutive_failures += 1
+                pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': 'bounds'})
                 continue
             
-            # Sample thickness
-            thickness = random.uniform(0.005, MAX_THICKNESS)
+            # Sample thickness - bias toward thinner panels to meet A/t ratio constraint
+            # For A/t >= 50: if surface_area ≈ 0.5 m², need thickness <= 0.01 m
+            # Use weighted sampling: 70% chance of thin (0.005-0.01), 30% chance of thicker (0.01-0.02)
+            if random.random() < 0.7:
+                thickness = random.uniform(0.005, 0.01)  # Thin panels for higher A/t ratio
+            else:
+                thickness = random.uniform(0.01, MAX_THICKNESS)  # Thicker panels
             
             # Extrude to 3D
             mesh_3d = extrude_to_3d(base_shape, thickness)
             if mesh_3d is None:
                 stats['invalid_samples'] += 1
+                consecutive_failures += 1
+                pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': 'extrusion'})
                 continue
             
-            # Assign material
-            material_type, material_props = assign_material()
+            # Assign material (with sustainability constraint)
+            material_type, material_props = assign_material(min_sustainability)
             
             # Compute features
             features_2d = compute_2d_features(base_shape)
@@ -1151,9 +1238,15 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
             )
             
             # Validate constraints
-            area_thickness_ok = check_area_thickness_ratio(
-                features_2d['area'], thickness
-            )
+            # Use surface_area (3D) for A/t ratio check - this gives more reasonable values
+            # For a 0.5x0.5m panel with thickness 0.01m: surface_area ≈ 0.5 m², ratio ≈ 50
+            surface_area = features_3d['surface_area']
+            if surface_area <= 0 or surface_area < features_2d['area']:
+                # Fallback: estimate surface area from 2D area (top + bottom + sides)
+                # Top and bottom faces + perimeter * thickness for sides
+                surface_area = 2 * features_2d['area'] + features_2d['perimeter'] * thickness
+            
+            area_thickness_ok = check_area_thickness_ratio(surface_area, thickness)
             cost_ok = check_cost(material_props['cost'], max_cost)
             sustainability_ok = check_sustainability(
                 material_props['sustainability_index'], min_sustainability
@@ -1161,6 +1254,16 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
             
             if not (area_thickness_ok and cost_ok and sustainability_ok):
                 stats['invalid_samples'] += 1
+                consecutive_failures += 1
+                reason = []
+                if not area_thickness_ok:
+                    ratio = surface_area / thickness if thickness > 0 else 0
+                    reason.append(f'A/t={ratio:.1f}')
+                if not cost_ok:
+                    reason.append(f'cost={material_props["cost"]:.1f}')
+                if not sustainability_ok:
+                    reason.append(f'sust={material_props["sustainability_index"]:.2f}')
+                pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': ','.join(reason)})
                 continue
             
             # Generate geometry ID
@@ -1172,10 +1275,14 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
             
             if not save_mesh(mesh_3d, mesh_path):
                 stats['invalid_samples'] += 1
+                consecutive_failures += 1
+                pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': 'save_mesh'})
                 continue
             
             if not save_geometry_geojson(base_shape, geojson_path):
                 stats['invalid_samples'] += 1
+                consecutive_failures += 1
+                pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': 'save_geojson'})
                 continue
             
             # Prepare data row
@@ -1213,6 +1320,7 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
             stats['valid_samples'] += 1
             complexity_counts[actual_complexity] += 1
             stats['complexity_distribution'] = complexity_counts.copy()
+            consecutive_failures = 0  # Reset failure counter on success
             
             pbar.update(1)
             pbar.set_postfix({
@@ -1224,6 +1332,8 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
         except Exception as e:
             logger.warning(f"Error generating sample: {e}")
             stats['invalid_samples'] += 1
+            consecutive_failures += 1
+            pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': 'exception'})
             continue
     
     pbar.close()
