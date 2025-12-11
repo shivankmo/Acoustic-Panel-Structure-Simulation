@@ -29,45 +29,46 @@ except ImportError:
     PYMESH_AVAILABLE = False
     logger.warning("PyMesh not available. Using simplified mesh generation.")
 
-# Constants
-BOUNDS = (0.5, 0.5)  # 0.5 × 0.5 m bounds
-MAX_THICKNESS = 0.02  # 0.02 m maximum thickness
-MIN_AREA_THICKNESS_RATIO = 50
-MAX_AREA_THICKNESS_RATIO = 300
-MIN_SUSTAINABILITY = 0.75
-DEFAULT_MAX_COST = 50.0
+# Global constraints
+BOUNDS = (0.5, 0.5)        # 50 cm × 50 cm panel footprint
+MAX_THICKNESS = 0.05       # realistic acoustic panel max thickness: 5 cm
+MIN_AREA_THICKNESS_RATIO = 40
+MAX_AREA_THICKNESS_RATIO = 250
+MIN_SUSTAINABILITY = 0.20  # dataset minimum
+DEFAULT_MAX_COST = 60.0    # dataset maximum
 
-# Material database
+
 MATERIALS = {
     'foam': {
-        'density': (20, 200),  # kg/m³ range
-        'youngs_modulus': (1e5, 1e7),  # Pa range
-        'poissons_ratio': (0.1, 0.4),
-        'cost': (5, 15),  # $/m²
-        'sustainability_index': (0.6, 0.9)
+        'density': (28, 120),                # kg/m³ – typical acoustic polyurethane foam
+        'youngs_modulus': (5e3, 2e5),        # Pa – soft, compliant
+        'poissons_ratio': (0.25, 0.45),
+        'cost': (10, 30),                    # $/m² installed cost
+        'sustainability_index': (0.30, 0.55)
     },
     'cork': {
-        'density': (120, 240),
-        'youngs_modulus': (1e6, 5e7),
-        'poissons_ratio': (0.0, 0.3),
-        'cost': (10, 25),
-        'sustainability_index': (0.7, 0.95)
+        'density': (110, 200),               # kg/m³ – density of expanded cork boards
+        'youngs_modulus': (1e7, 3e7),        # Pa – slightly compliant but stiffer than foam
+        'poissons_ratio': (0.05, 0.20),
+        'cost': (20, 50),                    # cork panels are expensive
+        'sustainability_index': (0.85, 0.97)
     },
     'recycled_plastic': {
-        'density': (800, 1200),
-        'youngs_modulus': (1e8, 3e9),
-        'poissons_ratio': (0.3, 0.45),
-        'cost': (8, 20),
-        'sustainability_index': (0.65, 0.85)
+        'density': (850, 1100),              # kg/m³ – HDPE / PET blends
+        'youngs_modulus': (5e8, 2e9),        # consistent with polymer composites
+        'poissons_ratio': (0.25, 0.40),
+        'cost': (15, 40),                    # manufacturing + recycling processes
+        'sustainability_index': (0.55, 0.80)
     },
     'cardboard': {
-        'density': (600, 900),
-        'youngs_modulus': (1e7, 5e8),
-        'poissons_ratio': (0.2, 0.35),
-        'cost': (3, 12),
-        'sustainability_index': (0.75, 0.95)
+        'density': (150, 400),               # kg/m³ – for pressed fiberboard
+        'youngs_modulus': (5e8, 2e9),        # fiberboard stiffness range
+        'poissons_ratio': (0.15, 0.35),
+        'cost': (2, 15),                     # very cheap bulk pricing
+        'sustainability_index': (0.70, 0.95)
     }
 }
+
 
 # Complexity to mesh size mapping (for FEM reference)
 COMPLEXITY_MESH_SIZES = {
@@ -88,7 +89,7 @@ COMPLEXITY_PARAMETERS = {
         'curvature': (0, 0.1)
     },
     2: {
-        'num_holes': (1, 5),
+        'num_holes': (0, 5),  # allow hole-free shapes at level 2
         'hole_radius': (0.005, 0.02),
         'fractal_order': (0, 0),
         'nesting_levels': (0, 0),
@@ -213,7 +214,7 @@ def generate_gear_shape(center: Tuple[float, float], outer_radius: float,
 
 def generate_base_shape(shape_type: str, bounds: Tuple[float, float], 
                        complexity: int, **kwargs) -> Polygon:
-    """Router function for base shape generation."""
+    """Router function for base shape generation - focused on curved, wave-like panels."""
     width, height = bounds
     center = (0, 0)
     
@@ -227,21 +228,34 @@ def generate_base_shape(shape_type: str, bounds: Tuple[float, float],
         h = height * (0.6 + 0.4 * random.random())
         return generate_ellipse(w, h, center)
     elif shape_type == 'polygon':
-        num_vertices = random.randint(5, 8)
-        return generate_irregular_polygon(bounds, num_vertices)
-    elif shape_type == 'star':
-        outer_r = min(width, height) / 2 * 0.8
-        inner_r = outer_r * (0.3 + 0.3 * random.random())
-        num_points = random.randint(5, 8)
-        return generate_star_polygon(center, outer_r, inner_r, num_points)
-    elif shape_type == 'gear':
-        outer_r = min(width, height) / 2 * 0.8
-        num_teeth = random.randint(6, 12)
-        tooth_depth = outer_r * (0.1 + 0.2 * random.random())
-        return generate_gear_shape(center, outer_r, num_teeth, tooth_depth)
+        num_vertices = random.randint(6, 12)
+        return generate_irregular_polygon(bounds, num_vertices, irregularity=0.3 + 0.3 * random.random(), spikiness=0.2 + 0.2 * random.random())
+    elif shape_type == 'organic':
+        num_points = random.randint(10, 20)
+        radius_var = 0.2 + 0.4 * random.random()
+        smoothness = 0.3 + 0.5 * random.random()
+        return generate_organic_shape(center, num_points, radius_var, smoothness)
+    elif shape_type == 'wave':
+        frequency = random.uniform(2, 8)
+        amplitude = min(width, height) * (0.05 + 0.15 * random.random())
+        phase = random.uniform(0, 2 * np.pi)
+        return generate_wave_boundary(bounds, frequency, amplitude, phase)
+    elif shape_type == 'spline':
+        num_control = random.randint(4, 8)
+        control_points = []
+        for _ in range(num_control):
+            angle = random.uniform(0, 2 * np.pi)
+            radius = min(width, height) / 2 * (0.4 + 0.4 * random.random())
+            control_points.append((center[0] + radius * np.cos(angle), 
+                                 center[1] + radius * np.sin(angle)))
+        return generate_spline_boundary(control_points, num_points=60)
+    elif shape_type == 'honeycomb':
+        cell_size = random.uniform(0.03, 0.06)
+        wall_thickness = random.uniform(0.002, 0.006)
+        return generate_honeycomb_lattice(bounds, cell_size, wall_thickness)
     else:
-        # Default to rectangle
-        return generate_rectangle(bounds, center)
+        # Default to organic shape
+        return generate_organic_shape(center, 12, 0.3, 0.5)
 
 
 # ============================================================================
@@ -708,15 +722,15 @@ def sample_parameters(complexity_level: int) -> Dict[str, Any]:
 
 
 def select_shape_strategy(complexity_level: int) -> str:
-    """Choose shape generation method based on complexity."""
+    """Choose shape generation method based on complexity - favor curved/wave-like shapes."""
     if complexity_level == 1:
-        return random.choice(['rectangle', 'circle', 'polygon'])
+        return random.choice(['circle', 'ellipse', 'polygon'])
     elif complexity_level == 2:
-        return random.choice(['rectangle', 'circle', 'polygon', 'star'])
+        return random.choice(['circle', 'ellipse', 'polygon', 'organic', 'wave'])
     elif complexity_level == 3:
-        return random.choice(['polygon', 'star', 'gear'])
+        return random.choice(['polygon', 'organic', 'wave', 'spline', 'honeycomb'])
     else:
-        return random.choice(['polygon', 'star', 'gear'])
+        return random.choice(['polygon', 'organic', 'wave', 'spline', 'honeycomb'])
 
 
 # ============================================================================
@@ -918,6 +932,16 @@ def compute_3d_features(mesh_data: Dict[str, np.ndarray], thickness: float) -> D
         bbox_max = vertices.max(axis=0)
         bbox_volume = np.prod(bbox_max - bbox_min)
         
+        # Ensure surface_area is reasonable (should be at least 2x the 2D area for top+bottom)
+        # If computed surface_area seems too small, it might be incorrect
+        min_expected_surface = 0.3  # Minimum expected for 0.5x0.5m panel
+        if surface_area < min_expected_surface:
+            # Recalculate using bounding box approximation
+            width = bbox_max[0] - bbox_min[0]
+            height = bbox_max[1] - bbox_min[1]
+            # Top + bottom + 4 sides
+            surface_area = 2 * width * height + 2 * (width + height) * thickness
+        
         features = {
             'surface_area': float(surface_area),
             'volume': float(volume),
@@ -1030,7 +1054,7 @@ def create_complexity_separated_csvs(main_csv: str, output_dir: str) -> None:
             if not level_df.empty:
                 output_path = os.path.join(output_dir, f'dataset_complexity_{level}.csv')
                 level_df.to_csv(output_path, index=False)
-                logger.info(f"Created {output_path} with {len(level_df)} geometries")
+                logger.info(f"Created/updated {output_path} with {len(level_df)} geometries")
     except Exception as e:
         logger.warning(f"Failed to create separated CSVs: {e}")
 
@@ -1096,6 +1120,24 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
     # Initialize CSV
     csv_path = os.path.join(output_dir, 'dataset.csv')
     csv_initialized = False
+    
+    # Check for existing dataset and get next available geometry ID
+    existing_ids = set()
+    if os.path.exists(csv_path):
+        try:
+            existing_df = pd.read_csv(csv_path)
+            if 'geometry_id' in existing_df.columns:
+                existing_ids = set(existing_df['geometry_id'].values)
+                logger.info(f"Found existing dataset with {len(existing_ids)} geometries. Will append new geometries.")
+        except Exception as e:
+            logger.warning(f"Could not read existing CSV: {e}")
+    
+    # Find next available geometry ID
+    if existing_ids:
+        max_id = max([int(id.split('_')[1]) for id in existing_ids if '_' in id], default=-1)
+        start_id = max_id + 1
+    else:
+        start_id = 0
     
     # Complexity counters
     complexity_counts = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
@@ -1205,13 +1247,13 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
                 pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': 'bounds'})
                 continue
             
-            # Sample thickness - bias toward thinner panels to meet A/t ratio constraint
+            # Sample thickness - bias heavily toward thinner panels to meet A/t ratio constraint
             # For A/t >= 50: if surface_area ≈ 0.5 m², need thickness <= 0.01 m
-            # Use weighted sampling: 70% chance of thin (0.005-0.01), 30% chance of thicker (0.01-0.02)
-            if random.random() < 0.7:
-                thickness = random.uniform(0.005, 0.01)  # Thin panels for higher A/t ratio
+            # Use weighted sampling: 85% chance of thin (0.005-0.009), 15% chance of thicker (0.009-0.015)
+            if random.random() < 0.85:
+                thickness = random.uniform(0.005, 0.009)  # Thin panels for higher A/t ratio
             else:
-                thickness = random.uniform(0.01, MAX_THICKNESS)  # Thicker panels
+                thickness = random.uniform(0.009, 0.015)  # Slightly thicker panels
             
             # Extrude to 3D
             mesh_3d = extrude_to_3d(base_shape, thickness)
@@ -1241,10 +1283,22 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
             # Use surface_area (3D) for A/t ratio check - this gives more reasonable values
             # For a 0.5x0.5m panel with thickness 0.01m: surface_area ≈ 0.5 m², ratio ≈ 50
             surface_area = features_3d['surface_area']
-            if surface_area <= 0 or surface_area < features_2d['area']:
+            
+            # Ensure surface_area is reasonable - should be at least 2x 2D area (top + bottom)
+            min_surface_area = 2 * features_2d['area']
+            if surface_area <= 0 or surface_area < min_surface_area:
                 # Fallback: estimate surface area from 2D area (top + bottom + sides)
                 # Top and bottom faces + perimeter * thickness for sides
                 surface_area = 2 * features_2d['area'] + features_2d['perimeter'] * thickness
+            
+            # Additional check: ensure ratio will be valid before checking
+            # If thickness is too large relative to surface_area, reject early
+            estimated_ratio = surface_area / thickness
+            if estimated_ratio < MIN_AREA_THICKNESS_RATIO * 0.9:  # 10% margin
+                stats['invalid_samples'] += 1
+                consecutive_failures += 1
+                pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': f'A/t={estimated_ratio:.1f}'})
+                continue
             
             area_thickness_ok = check_area_thickness_ratio(surface_area, thickness)
             cost_ok = check_cost(material_props['cost'], max_cost)
@@ -1266,8 +1320,12 @@ def generate_dataset(num_samples: int, output_dir: str, seed: Optional[int] = No
                 pbar.set_postfix({'valid': stats['valid_samples'], 'invalid': stats['invalid_samples'], 'reason': ','.join(reason)})
                 continue
             
-            # Generate geometry ID
-            geometry_id = f"geom_{stats['valid_samples']:06d}"
+            # Generate geometry ID (ensure uniqueness)
+            geometry_id = f"geom_{start_id + stats['valid_samples']:06d}"
+            
+            # Double-check it doesn't exist (shouldn't happen, but safety check)
+            if geometry_id in existing_ids:
+                geometry_id = f"geom_{start_id + stats['valid_samples'] + len(existing_ids):06d}"
             
             # Save files
             mesh_path = os.path.join(geometries_dir, f"{geometry_id}.obj")
